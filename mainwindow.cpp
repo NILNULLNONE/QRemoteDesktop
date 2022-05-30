@@ -22,7 +22,8 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::on_DesktopSizeChanged);
 //    connect(nsWidget, &NetworkSetting::sig_resoChanged,
 //            this, &MainWindow::on_ResoChanged);
-
+    connect(desktopView, &DesktopView::sig_close,
+            nsWidget, &NetworkSetting::TriggerDisconnect);
 //    nsWidget->Init();
 }
 
@@ -33,6 +34,7 @@ MainWindow::~MainWindow()
 
 void MainWindow::on_BuildConn()
 {
+    if(desktopView->isVisible())return;
     desktopView->show();
 }
 

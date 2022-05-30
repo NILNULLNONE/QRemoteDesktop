@@ -17,7 +17,16 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
-private slots:
+protected:
+    virtual void closeEvent(QCloseEvent* evt) override
+    {
+        if(desktopView->isVisible())
+        {
+            desktopView->close();
+        }
+
+    }
+private slots:    
     void on_NewConnectionAction_triggered(bool checked);
 
     void on_OpenLogWindow_triggered(bool checked);

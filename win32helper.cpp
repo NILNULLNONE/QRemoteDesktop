@@ -103,6 +103,7 @@ void StretchCaptureDesktop(quint8* dst, quint64 dstSize, quint16 width, quint16 
     hBitmap = CreateDIBSection(hDC, &bInfo, DIB_RGB_COLORS, (VOID **)&bBits, NULL, 0);
     SelectObject(hMemDC, hBitmap);
     SetStretchBltMode(hMemDC, HALFTONE);
+    SetBrushOrgEx(hMemDC, 0, 0, NULL);
     StretchBlt(hMemDC, 0, 0, width, height, hDC, x, y, bAllDesktops.bmWidth, bAllDesktops.bmHeight, SRCCOPY);
 
     memcpy(dst, bBits, dstSize);

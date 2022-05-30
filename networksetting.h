@@ -103,6 +103,22 @@ class TcpConnectionProxy : public QObject
     Q_OBJECT
 public:
     TcpConnectionProxy(QTcpSocket* client, TcpConnReadState state);
+    ~TcpConnectionProxy()
+    {
+        if(clientConn)
+        {
+            clientConn->disconnect();
+            if(clientConn->isOpen())
+            {
+                clientConn->close();
+                if(clientConn->state() != QAbstractSocket::SocketState::UnconnectedState)
+                    clientConn->waitForDisconnected();
+            }
+
+            delete clientConn;
+            clientConn = nullptr;
+        }
+    }
     QTcpSocket* GetSocket()const{return clientConn;}
     void SwitchState(TcpConnReadState state)
     {
@@ -153,7 +169,9 @@ public:
         for(auto& handler : desktopBlockPacketHandleres)
             (*handler)(packet);
     }
-
+signals:
+    void sig_SocketError(QAbstractSocket::SocketError err);
+    void sig_SocketStateChanged(QAbstractSocket::SocketState state);
 private:
     void ReadData();
     template<typename PType>
@@ -172,7 +190,7 @@ private:
     QVector<DesktopBlockPacketHandler*> desktopBlockPacketHandleres;
 };
 
-extern void OnSocketError(QAbstractSocket::SocketError err);
+//extern void OnSocketError(QAbstractSocket::SocketError err);
 
 class ServerConnThreadWorker :
         public QObject,
@@ -180,13 +198,24 @@ class ServerConnThreadWorker :
 {
     Q_OBJECT
 public:
-    ServerConnThreadWorker(qintptr d) : descriptor(d)
+    ServerConnThreadWorker(qintptr d)
+        : descriptor(d),
+         clientProxy(nullptr)
     {
         connect(this, &ServerConnThreadWorker::sig_recvRequest,
                 this, &ServerConnThreadWorker::on_recvRequest);
     }
+
+    ~ServerConnThreadWorker()
+    {
+        this->CleanUp();
+    }
     void work();
 
+    void on_ClientDisconnect()
+    {
+        qDebug()<<"client disconnect";
+    }
 signals:
     void sig_recvRequest();
 
@@ -247,6 +276,22 @@ public:
             clientProxy->GetSocket()->write(reinterpret_cast<char*>(&blkPacket), sizeof(blkPacket));
         }
     }
+
+    void on_SocketError(QAbstractSocket::SocketError err)
+    {
+//        this->CleanUp();
+        qDebug()<<"socet err "<<err;
+    }
+
+    void CleanUp()
+    {
+//        if(clientProxy)
+//        {
+//            clientProxy->disconnect();
+//            delete clientProxy;
+//            clientProxy = nullptr;
+//        }
+    }
 private:
     qintptr descriptor;
     RequestDesktopPacket reqPacket;
@@ -263,11 +308,26 @@ class ClientThreadWorker :
     Q_OBJECT
 public:
     ClientThreadWorker()
-        : reqScale(100)
+        : clientProxy(nullptr),
+          reqScale(50)
 //        : reqWidth(1024),
 //          reqHeight(768)
     {
-
+        clientThread = new QThread();
+        clientThread->start();
+        this->moveToThread(clientThread);
+        connect(this, &ClientThreadWorker::startWork,
+                this, &ClientThreadWorker::work);
+        connect(this, &ClientThreadWorker::sig_CleanUp,
+                this, &ClientThreadWorker::CleanUp);
+    }
+    ~ClientThreadWorker()
+    {
+//        clientThread->terminate();
+        emit this->sig_CleanUp();
+        clientThread->quit();
+        clientThread->wait();
+        delete clientThread;
     }
 
     void SetHostIp(const QString& hip){hostIp = hip;}
@@ -290,6 +350,13 @@ public:
     void SendRequestDesktopPacket();
 
     void UpdateRequestScale(double s) {reqScale = s;}
+
+    void CleanUp();
+
+    bool IsConnected()const
+    {
+        return clientProxy && clientProxy->GetSocket()->state() == QAbstractSocket::SocketState::ConnectedState;
+    }
 //    void UpdateRequestResolution(quint16 w, quint16 h)
 //    {
 //        reqWidth = w;
@@ -298,6 +365,7 @@ public:
 signals:
     void startWork();
     void sig_UpdateSize(quint16 w, quint16 h);
+    void sig_CleanUp();
 private:
     TcpConnectionProxy* clientProxy;
     QString hostIp;
@@ -310,6 +378,7 @@ private:
     QElapsedTimer epTimer;
 //    quint16 reqWidth, reqHeight;
     double reqScale;
+    QThread* clientThread;
 };
 
 namespace Ui {
@@ -320,28 +389,54 @@ class RDServer : public QTcpServer
 {
     Q_OBJECT
 public:
-    RDServer(QObject* parent) : QTcpServer(parent)
+    RDServer(QObject* parent) :
+        QTcpServer(parent),
+        serverThread(nullptr),
+        newConnThreadWorker(nullptr)
     {
-        serverThread.start();
+
     }
     RDServer():RDServer(nullptr){}
     ~RDServer()
     {
-        serverThread.terminate();
+        this->CleanUp();
+    }
+
+    void CleanUp()
+    {
+        if(serverThread)
+        {
+            if(serverThread->isRunning())
+            {
+                 serverThread->quit();
+                 serverThread->wait();
+            }
+            delete serverThread;
+            serverThread = nullptr;
+        }
+
+        if(newConnThreadWorker)
+        {
+            delete newConnThreadWorker;
+            newConnThreadWorker = nullptr;
+        }
     }
 signals:
     void startWork();
 protected:
     void incomingConnection(qintptr socketDescriptor)override
     {
-        ServerConnThreadWorker* newConnThreadWorker = new ServerConnThreadWorker(socketDescriptor);
-        newConnThreadWorker->moveToThread(&serverThread);
+        serverThread = new QThread();
+        serverThread->start();
+        newConnThreadWorker = new ServerConnThreadWorker(socketDescriptor);
+        newConnThreadWorker->moveToThread(serverThread);
         connect(this, &RDServer::startWork, newConnThreadWorker, &ServerConnThreadWorker::work);
         emit startWork();
 
     }
 private:
-    QThread serverThread;
+    QThread* serverThread;
+    ServerConnThreadWorker* newConnThreadWorker;
 };
 
 class NetworkSetting : public QWidget
@@ -364,10 +459,20 @@ signals:
 
     void sig_UpdateSize(quint16, quint16);
 //    void sig_resoChanged(quint16 w, quint16 h);
+public:
+    void TriggerDisconnect()
+    {
+        if(client->IsConnected())
+        {
+//            client->CleanUp();
+            emit client->sig_CleanUp();
+        }
+    }
 private slots:
     void on_waitConnBtn_clicked(bool checked);
 
     void on_buildConnBtn_clicked(bool checked);
+
 
 //    void on_resoBox_currentTextChanged(const QString &arg1);
 

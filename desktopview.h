@@ -10,8 +10,10 @@
 #include<QDebug>
 class DesktopView : public QOpenGLWidget, public RDDataHandler
 {
+    Q_OBJECT
 public:
-    DesktopView()
+    DesktopView(QWidget* parent = nullptr)
+        : QOpenGLWidget(parent)
     {
         QSurfaceFormat format;
         format.setDepthBufferSize(24);
@@ -209,6 +211,15 @@ public:
         rddataQueue.back().rowAlign = rowAlign;
         rddataQueueLock.unlock();
     }
+protected:
+    virtual void closeEvent(QCloseEvent* evt)override
+    {
+        emit sig_close();
+        QOpenGLWidget::closeEvent(evt);
+    }
+
+signals:
+    void sig_close();
 private:
     QOpenGLFunctions_3_2_Core *f;
     GLuint desktex;

@@ -24,6 +24,8 @@ TcpConnectionProxy::TcpConnectionProxy(QTcpSocket* client, TcpConnReadState stat
 {
     SwitchState(readState);
     if(!clientConn)return;
+    connect(clientConn, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::error), this, &TcpConnectionProxy::sig_SocketError);
+    connect(clientConn, &QTcpSocket::stateChanged, this, &TcpConnectionProxy::sig_SocketStateChanged);
     connect(clientConn, &QAbstractSocket::disconnected,this, &TcpConnectionProxy::on_clientDisconnected);
     connect(clientConn, &QAbstractSocket::readyRead, this, &TcpConnectionProxy::on_clientDataReady);
 }
@@ -127,6 +129,7 @@ NetworkSetting::~NetworkSetting()
     delete ui;
     delete server;
     delete client;
+    qDebug("delete network setting");
 }
 
 bool CheckIp(const QString& ipStr)
@@ -151,6 +154,8 @@ void NetworkSetting::on_waitConnBtn_clicked(bool checked)
         logd("local host ip is invalid: %s", myIp.toStdString().c_str());
         return;
     }
+    if(server->isListening())
+        return;
     logd("listen to %s", myIp.toStdString().c_str());
     if(!server->listen(QHostAddress(myIp), SRV_PORT))
     {
@@ -167,12 +172,12 @@ void NetworkSetting::on_buildConnBtn_clicked(bool checked)
         return;
     }
     emit sig_buildConn();
+    if(client->IsConnected())
+    {
+        logd("alread connected");
+        return;
+    }
     client->SetHostIp(hostIp);
-    QThread* clientThread = new QThread();
-    clientThread->start();
-    client->moveToThread(clientThread);
-    connect(client, &ClientThreadWorker::startWork,
-            client, &ClientThreadWorker::work);
     emit client->startWork();
 }
 
@@ -182,9 +187,11 @@ void ServerConnThreadWorker::work()
     clientConn->setSocketDescriptor(descriptor);
     clientProxy = new TcpConnectionProxy(clientConn, TcpConnReadState::WaitForRequestPacket);
     clientProxy->RegisterRequestDesktopPacketHandler(this);
-    connect(clientProxy->GetSocket(),
-            QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::error),
-            OnSocketError);
+    connect(clientConn, &QTcpSocket::disconnected,
+            this, &ServerConnThreadWorker::on_ClientDisconnect);
+//    connect(clientProxy->GetSocket(),
+//            QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::error),
+//            this, &ServerConnThreadWorker::on_SocketError);
 }
 
 
@@ -196,7 +203,7 @@ void ClientThreadWorker::operator()(const ResponseDesktopPacket& packet)
     compressedRddata.resize(packet.GetNumBlocks() * packet.GetNumBytesPerBlock());
 
     emit sig_UpdateSize(respPacket.width, respPacket.height);
-    epTimer.restart();
+//    epTimer.restart();
 }
 
 void ClientThreadWorker::operator()(const DesktopBlockPacket& packet)
@@ -209,7 +216,7 @@ void ClientThreadWorker::operator()(const DesktopBlockPacket& packet)
         extern qint32 lz4Decompress(const void* src, void* dst, qint32 srcSize, qint32 maxOutputSize);
         lz4Decompress(compressedRddata.data(), rddata.data(),
                       respPacket.size, rddata.size());
-        qDebug()<< "recv total data use"  << epTimer.elapsed() << " ms";
+//        qDebug()<< "recv total data use"  << epTimer.elapsed() << " ms";
         crntBlkIdx = 0;
         for(auto handler : rddataHandleres)
         {
@@ -239,24 +246,45 @@ void ClientThreadWorker::on_clientSocketStateChanged(QAbstractSocket::SocketStat
     {
         this->SendRequestDesktopPacket();
     }
+    else if(newState == QAbstractSocket::SocketState::UnconnectedState)
+    {
+//        this->CleanUp();
+        emit this->sig_CleanUp();
+    }
 }
 
-void OnSocketError(QAbstractSocket::SocketError err)
-{
-    logd("socket error: %d", (int)err);
-}
+//void OnSocketError(QAbstractSocket::SocketError err)
+//{
+//    logd("socket error: %d", (int)err);
+//}
 
 void ClientThreadWorker::work()
 {
     clientProxy = new TcpConnectionProxy(new QTcpSocket(), TcpConnReadState::WaitForResponsePacket);
-    connect(clientProxy->GetSocket(), QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::error),
-            this, OnSocketError);
-    connect(clientProxy->GetSocket(), &QTcpSocket::stateChanged,
+    connect(clientProxy, &TcpConnectionProxy::sig_SocketError,
+            this, &ClientThreadWorker::on_clientSocketError);
+    connect(clientProxy, &TcpConnectionProxy::sig_SocketStateChanged,
             this, &ClientThreadWorker::on_clientSocketStateChanged);
     clientProxy->RegisterResponseDesktopPacketHandler(this);
     clientProxy->RegisterDesktopBlockPacketHandler(this);
     logd("try connect to %s", hostIp.toStdString().c_str());
     clientProxy->GetSocket()->connectToHost(QHostAddress(hostIp), SRV_PORT);
+}
+
+void ClientThreadWorker::on_clientSocketError(QAbstractSocket::SocketError err)
+{
+//    this->CleanUp();
+    emit this->sig_CleanUp();
+}
+
+void ClientThreadWorker::CleanUp()
+{
+    if(clientProxy)
+    {
+        delete clientProxy;
+        clientProxy = nullptr;
+    }
+
 }
 
 //void NetworkSetting::on_resoBox_currentTextChanged(const QString &resoStr)
