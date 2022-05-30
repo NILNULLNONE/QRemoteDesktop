@@ -11,20 +11,12 @@
 #include"rddatahandler.h"
 #include "logger.h"
 #define SRV_PORT 18877
-//#define BLOCK_WIDTH 128
-//#define BLOCK_HEIGHT 128
-//#define BLOCK_SIZE (BLOCK_WIDTH * BLOCK_HEIGHT)
-//#define NUM_PIXELS_PER_BLOCK (1024 * 8 * 4 * 2)
-//#define NUM_PIXELS_PER_BLOCK 1024*64
-//#define PACKET_BLOCK_BYTES (1024 * 8 * 4 * 4 * 2)
 #define PACKET_BLOCK_BYTES 1024*400
-//#define BUF_SIZE (65536 * 4 * 2)
-//#define BUF_SIZE 65536
 #define BUF_SIZE 1024*1024
 extern quint64 ComputeNumBytes(quint64 numPixelsPerBlock, QImage::Format fmt);
 extern void GetDesktopCaptureInfo(quint16* width, quint16* height, QImage::Format* format, bool* rowAlign);
 extern void CaptureDesktop(quint8* bytes);
-
+extern void StretchCaptureDesktop(quint8* dst, quint64 dstSize, quint16 width, quint16 height);
 enum class PacketType
 {
     Empty,
@@ -41,6 +33,9 @@ struct Packet
 struct RequestDesktopPacket
 {
     PacketType type = PacketType::RequestDesktop;
+    double scale;
+//    quint16 width;
+//    quint16 height;
 };
 
 struct ResponseDesktopPacket
@@ -69,12 +64,8 @@ struct ResponseDesktopPacket
         }
         return bytes;
     }
-    //quint64 GetNumBytesPerBlock()const{return ComputeNumBytes(NUM_PIXELS_PER_BLOCK, pixelFormt);}
     quint64 GetNumBytesPerBlock()const{return PACKET_BLOCK_BYTES;}
     quint64 GetNumBlocks()const{return (size + GetNumBytesPerBlock() - 1) / GetNumBytesPerBlock();}
-//    quint16 rows;
-//    quint16 cols;
-//    quint32 numBlocks;
 };
 
 struct DesktopBlockPacket
@@ -83,9 +74,6 @@ struct DesktopBlockPacket
     quint8 block[PACKET_BLOCK_BYTES];
 };
 
-//typedef void (*RequestDesktopPacketHandler)(const RequestDesktopPacket&, void*);
-//typedef void (*ResponseDesktopPacketHandler)(const ResponseDesktopPacket&, void*);
-//typedef void (*DesktopBlockPacketHandler)(const DesktopBlockPacket&, void*);
 struct RequestDesktopPacketHandler
 {
     virtual void operator()(const RequestDesktopPacket& packet){}
@@ -113,8 +101,6 @@ class TcpConnectionProxy;
 class TcpConnectionProxy : public QObject
 {
     Q_OBJECT
-//signals:
-//    void FinishPacket(TcpConnectionProxy* proxy, const Packet& packet);
 public:
     TcpConnectionProxy(QTcpSocket* client, TcpConnReadState state);
     QTcpSocket* GetSocket()const{return clientConn;}
@@ -167,10 +153,9 @@ public:
         for(auto& handler : desktopBlockPacketHandleres)
             (*handler)(packet);
     }
-//    static TcpConnectionProxy* CreateProxy(QTcpSocket* client);
+
 private:
     void ReadData();
-//    void ReadRequestPacket(char* dataBuf, qint64 dataSize);
     template<typename PType>
     void ReadPacket(char* dataBuf, qint64 dataSize);
 private slots:
@@ -209,31 +194,30 @@ public:
     void operator()(const RequestDesktopPacket& packet) override
     {
 //        logd("server recv request packet");
-        recvRequestPacket = packet;
+        reqPacket = packet;
         emit sig_recvRequest();
     }
-
-//    void GetDesktopCapture()
-//    {
-//        QScreen *screen = QGuiApplication::primaryScreen();
-////        if (const QWindow *window = windowHandle())
-////            screen = window->screen();
-//        if (!screen)
-//                return;
-//        QPixmap originalPixmap = screen->grabWindow(0);
-//        originalPixmap.data_ptr();
-//    }
 
     void on_recvRequest()
     {
         ResponseDesktopPacket respPacket;
         respPacket.type = PacketType::ResponseDesktop;
+//        respPacket.width = reqPacket.width;
+//        respPacket.height = reqPacket.height;
+        respPacket.alignRow = true;
+        respPacket.pixelFormt = QImage::Format_RGB888;
         GetDesktopCaptureInfo(&respPacket.width, &respPacket.height,
                               &respPacket.pixelFormt, &respPacket.alignRow);
+
+        {
+            respPacket.width *= reqPacket.scale;
+            respPacket.height *= reqPacket.scale;
+        }
         quint64 numBytes = respPacket.GetNumBytes();
         if(numBytes != captureData.size())
             captureData.resize(numBytes);
-        CaptureDesktop(captureData.data());
+//        CaptureDesktop(captureData.data());
+        StretchCaptureDesktop(captureData.data(), captureData.size(), respPacket.width, respPacket.height);
 
         // compress
         {
@@ -249,7 +233,6 @@ public:
 
         quint64 bytesPerBlock = respPacket.GetNumBytesPerBlock();
         quint64 numBlocks = respPacket.GetNumBlocks();
-        //quint64 numBlocks = respPacket.GetNumBlocks();
         DesktopBlockPacket blkPacket;
         quint8* dataPtr = compressedData.data();
 
@@ -265,15 +248,13 @@ public:
         }
     }
 private:
-//    void on_serverConnRecvPacket(TcpConnectionProxy* clientProxy, const Packet& packet);
     qintptr descriptor;
-    RequestDesktopPacket recvRequestPacket;
+    RequestDesktopPacket reqPacket;
     TcpConnectionProxy* clientProxy;
     QVector<quint8> captureData;
     QVector<quint8> compressedData;
 };
 
-//class ClientThread : public QObject
 class ClientThreadWorker :
         public QObject
         , public ResponseDesktopPacketHandler
@@ -282,13 +263,14 @@ class ClientThreadWorker :
     Q_OBJECT
 public:
     ClientThreadWorker()
+        : reqScale(100)
+//        : reqWidth(1024),
+//          reqHeight(768)
     {
 
     }
 
     void SetHostIp(const QString& hip){hostIp = hip;}
-
-//    void on_clientRecvPacket(TcpConnectionProxy* clientProxy, const Packet& packet);
 
     void on_clientSocketStateChanged(QAbstractSocket::SocketState);
 
@@ -302,16 +284,20 @@ public:
     {
         rddataHandleres.push_back(handler);
     }
-//    void on_recvRespPacket();
-
-//    void on_recvBlockPacket();
 
     void work();
-//    void run();
 
     void SendRequestDesktopPacket();
+
+    void UpdateRequestScale(double s) {reqScale = s;}
+//    void UpdateRequestResolution(quint16 w, quint16 h)
+//    {
+//        reqWidth = w;
+//        reqHeight = h;
+//    }
 signals:
     void startWork();
+    void sig_UpdateSize(quint16 w, quint16 h);
 private:
     TcpConnectionProxy* clientProxy;
     QString hostIp;
@@ -322,6 +308,8 @@ private:
     int numBlks;
     QVector<RDDataHandler*> rddataHandleres;
     QElapsedTimer epTimer;
+//    quint16 reqWidth, reqHeight;
+    double reqScale;
 };
 
 namespace Ui {
@@ -347,7 +335,6 @@ protected:
     void incomingConnection(qintptr socketDescriptor)override
     {
         ServerConnThreadWorker* newConnThreadWorker = new ServerConnThreadWorker(socketDescriptor);
-//        newConnThread->start();
         newConnThreadWorker->moveToThread(&serverThread);
         connect(this, &RDServer::startWork, newConnThreadWorker, &ServerConnThreadWorker::work);
         emit startWork();
@@ -370,10 +357,20 @@ public:
     {
         client->RegisterRDDataHandler(handler);
     }
+
+//    void Init();
+signals:
+    void sig_buildConn();
+
+    void sig_UpdateSize(quint16, quint16);
+//    void sig_resoChanged(quint16 w, quint16 h);
 private slots:
     void on_waitConnBtn_clicked(bool checked);
 
     void on_buildConnBtn_clicked(bool checked);
+
+//    void on_resoBox_currentTextChanged(const QString &arg1);
+
 private:
     Ui::NetworkSetting *ui;
     RDServer* server;

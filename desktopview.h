@@ -1,14 +1,13 @@
 #ifndef DESKTOPVIEW_H
 #define DESKTOPVIEW_H
-#include<QOpenGLFunctions>
 #include<QOpenGLWidget>
-#include<QOpenGLShaderProgram>
-#include <QOpenGLFunctions_3_2_Core>
+#include<QOpenGLFunctions_3_2_Core>
 #include"rddatahandler.h"
 #include<QThread>
 #include<QQueue>
 #include<QMutex>
 #include<QTimer>
+#include<QDebug>
 class DesktopView : public QOpenGLWidget, public RDDataHandler
 {
 public:
@@ -141,58 +140,16 @@ public:
         f->glGenTextures(1, &desktex);
         f->glBindTexture(GL_TEXTURE_2D, desktex);
         uint8_t pixels[256][256][3];
-        for(int i = 0; i < 256; ++i)
-        {
-            for(int j = 0; j < 256; ++j)
-            {
-                pixels[i][j][0] = i;
-                pixels[i][j][1] = 0;
-                pixels[i][j][2] = j;
-            }
-        }
+        memset(pixels, 0, sizeof(pixels));
         f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         f->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 256, 256, 0, GL_BGR, GL_UNSIGNED_BYTE, pixels);
         f->glBindTexture(GL_TEXTURE_2D, 0);
-
-
-//        class TempThread : public QThread
-//        {
-//        public:
-//            TempThread(uint8_t (&p) [256][256][3], GLuint d, QOpenGLFunctions_3_2_Core* _f)
-//                    :pixels(p), desktex(d), f(_f)
-//            {}
-
-//        protected:
-//            virtual void run()override
-//            {
-//                f->glBindTexture(GL_TEXTURE_2D, desktex);
-//                for(int i = 0; i < 256; ++i)
-//                {
-//                    for(int j = 0; j < 256; ++j)
-//                    {
-//                        pixels[i][j][0] = i;
-//                        pixels[i][j][1] = j;
-//                        pixels[i][j][2] = 0;
-//                    }
-//                }
-//                f->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 256, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels);
-//                f->glBindTexture(GL_TEXTURE_2D, 0);
-//            }
-//        private:
-//            uint8_t (&pixels) [256][256][3];
-//            GLuint desktex;
-//            QOpenGLFunctions_3_2_Core*  f;
-//        };
-//        TempThread t(pixels, desktex, f);
-//        t.start();
-//        t.wait();
     }
 
     virtual void initializeGL()
     {
         f = QOpenGLContext::currentContext()->versionFunctions<QOpenGLFunctions_3_2_Core>();
-        //f = QOpenGLContext::currentContext()->functions();
         f->glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         CreateBuffer();
         CreateProgram();
@@ -202,11 +159,8 @@ public:
     void UpdateDesktopTexture()
     {
         rddataQueueLock.lock();
-//        qDebug()<<rddataQueue.empty();
         if(!rddataQueue.empty())
         {
-//            qDebug()<<"update desktop texture";
-
             f->glBindTexture(GL_TEXTURE_2D, desktex);
             if(rddataQueue.back().rowAlign)
                 f->glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
@@ -225,7 +179,6 @@ public:
 
     virtual void paintGL()
     {
-//        f = QOpenGLContext::currentContext()->versionFunctions<QOpenGLFunctions_3_2_Core>();
         f->glClear(GL_COLOR_BUFFER_BIT);
         UpdateDesktopTexture();
 
@@ -242,7 +195,7 @@ public:
 
     virtual void resizeGL(int w, int h)
     {
-        //QOpenGLWidget::resizeGL(w, h);
+        QOpenGLWidget::resizeGL(w, h);
     }
 
 public:
@@ -255,11 +208,6 @@ public:
         rddataQueue.back().height = height;
         rddataQueue.back().rowAlign = rowAlign;
         rddataQueueLock.unlock();
-//        f->glBindTexture(GL_TEXTURE_2D, desktex);
-//        if(rowAlign)
-//            f->glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-//        f->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data.data());
-//        f->glBindTexture(GL_TEXTURE_2D, 0);
     }
 private:
     QOpenGLFunctions_3_2_Core *f;
@@ -275,11 +223,9 @@ private:
         quint16 height;
         bool rowAlign;
     };
-
     QQueue<RDDataInfo> rddataQueue;
     QMutex rddataQueueLock;
     QTimer updateTimer;
-//    QOpenGLShaderProgram *program;
 };
 
 #endif // DESKTOPVIEW_H

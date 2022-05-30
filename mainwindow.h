@@ -22,6 +22,10 @@ private slots:
 
     void on_OpenLogWindow_triggered(bool checked);
 
+    void on_BuildConn();
+
+//    void on_ResoChanged(quint16 w, quint16 h);
+    void on_DesktopSizeChanged(quint16 w, quint16 h);
 private:
     Ui::MainWindow *ui;
     NetworkSetting* nsWidget;

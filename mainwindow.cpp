@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include <QDebug>
+#include <QStyle>
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -11,17 +12,48 @@ MainWindow::MainWindow(QWidget *parent)
     desktopView = new DesktopView();
     ui->vlayout->addWidget(nsWidget);
     ui->vlayout->addWidget(logDialog);
-    desktopView->setMinimumSize(800, 600);
-    ui->hlayout->addWidget(desktopView);
-
+//    ui->hlayout->addWidget(desktopView);
     nsWidget->RegisterRDDataHandler(desktopView);
 //    desktopView->show();
+
+    connect(nsWidget, &NetworkSetting::sig_buildConn,
+             this, &MainWindow::on_BuildConn);
+    connect(nsWidget, &NetworkSetting::sig_UpdateSize,
+            this, &MainWindow::on_DesktopSizeChanged);
+//    connect(nsWidget, &NetworkSetting::sig_resoChanged,
+//            this, &MainWindow::on_ResoChanged);
+
+//    nsWidget->Init();
 }
 
 MainWindow::~MainWindow()
 {
     delete ui;
 }
+
+void MainWindow::on_BuildConn()
+{
+    desktopView->show();
+}
+
+void MainWindow::on_DesktopSizeChanged(quint16 w, quint16 h)
+{
+    h = h + QApplication::style()->pixelMetric(QStyle::PM_TitleBarHeight);
+    if(desktopView->width() == w || desktopView->height() == h)
+        return;
+//    qDebug()<<"resize desktop view "<<w<<" "<<h;
+    desktopView->resize(w, h);
+}
+
+//void MainWindow::on_ResoChanged(quint16 w, quint16 h)
+//{
+//    h = h + QApplication::style()->pixelMetric(QStyle::PM_TitleBarHeight);
+//    qDebug()<<"resize desktop view "<<w<<" "<<h;
+////   desktopView->setMinimumSize(w, h);
+////   desktopView->setMaximumSize(w, h);
+//    desktopView->resize(w, h);
+//}
+
 
 
 void MainWindow::on_NewConnectionAction_triggered(bool checked)

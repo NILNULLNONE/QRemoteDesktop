@@ -46,7 +46,6 @@ void TcpConnectionProxy::ReadData()
     switch (readState)
     {
     case TcpConnReadState::WaitForRequestPacket:
-        //ReadRequestPacket(dataBuf, bytesRead);
         ReadPacket<RequestDesktopPacket>(dataBuf, bytesRead);
         break;
     case TcpConnReadState::WaitForResponsePacket:
@@ -62,12 +61,6 @@ void TcpConnectionProxy::ReadData()
         break;
     }
 }
-
-//template<typename PType>
-//void THandlePacket(const PType& packet, TcpConnectionProxy* proxy)
-//{
-//    proxy->HandlePacket(packet);
-//}
 
 template<typename PType>
 void TcpConnectionProxy::ReadPacket(char* dataBuf, qint64 dataSize)
@@ -86,11 +79,7 @@ void TcpConnectionProxy::ReadPacket(char* dataBuf, qint64 dataSize)
 
         PType packet;
         memcpy(&packet, dataCache, sizeof(PType));
-        //dataPtr = dataCache;
-
-        //THandlePacket(packet, this);
         this->HandlePacket(packet);
-
         if(dataSize > 0)
         {
             switch (packet.type) {
@@ -107,82 +96,8 @@ void TcpConnectionProxy::ReadPacket(char* dataBuf, qint64 dataSize)
                 break;
             }
         }
-
-//        switch (packet.type) {
-//        case PacketType::Empty:
-////            remainBytesToRead = sizeof(Packet);
-////            if(leaveBytes > 0)
-////            {
-////                ReadRequestPacket(dataBuf, leaveBytes);
-////            }
-//            break;
-//        case PacketType::RequestDesktop:
-//            for(auto handler : requestDesktopPacketHandleres)
-//            {
-//                (*handler)(packet);
-//            }
-//            break;
-//        case PacketType::ResponseDesktop:
-//            for(auto handler : responseDesktopPacketHandleres)
-//            {
-//                (*handler)(packet);
-//            }
-//            break;
-//        case PacketType::DesktopBlock:
-
-//            break;
-//        }
     }
 }
-
-
-//void TcpConnectionProxy::ReadRequestPacket(char* dataBuf, qint64 dataSize)
-//{
-//    if(dataSize < remainBytesToRead)
-//    {
-//        remainBytesToRead -= dataSize;
-//        memcpy(dataPtr, dataBuf, dataSize);
-//        dataPtr += dataSize;
-//    }
-//    else
-//    {
-//        qint64 leaveBytes = dataSize - remainBytesToRead;
-//        memcpy(dataPtr, dataBuf, remainBytesToRead);
-//        dataBuf += remainBytesToRead;
-
-//        RequestDesktopPacket packet;
-//        memcpy(&packet, dataCache, sizeof(Packet));
-//        dataPtr = dataCache;
-////        emit FinishPacket(this, packet);
-//        for(auto handler : requestDesktopPacketHandleres)
-//        {
-//            (*handler)(packet);
-//        }
-
-
-//        switch (packet.type) {
-//        case PacketType::Empty:
-////            remainBytesToRead = sizeof(Packet);
-////            if(leaveBytes > 0)
-////            {
-////                ReadRequestPacket(dataBuf, leaveBytes);
-////            }
-//            break;
-//        case PacketType::RequestDesktop:
-//            break;
-//        case PacketType::ResponseDesktop:
-//            break;
-//        case PacketType::DesktopBlock:
-//            break;
-//        }
-//    }
-//}
-
-//TcpConnectionProxy* TcpConnectionProxy::CreateProxy(QTcpSocket* client)
-//{
-//    TcpConnectionProxy* proxy = new TcpConnectionProxy(client);
-//    return proxy;
-//}
 
 NetworkSetting::NetworkSetting(QWidget *parent) :
     QWidget(parent),
@@ -191,14 +106,27 @@ NetworkSetting::NetworkSetting(QWidget *parent) :
     ui->setupUi(this);
     server = new RDServer(this);
     client = new ClientThreadWorker();
-//    clientThread.start();
+
+//    ui->resoBox->addItem("1920x1080");
+//    ui->resoBox->addItem("1024x768");
+//    ui->resoBox->addItem("800x600");
+
+    connect(ui->scaleSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            client, &ClientThreadWorker::UpdateRequestScale);
+    connect(client, &ClientThreadWorker::sig_UpdateSize,
+            this, &NetworkSetting::sig_UpdateSize);
 }
+
+//void NetworkSetting::Init()
+//{
+//    ui->resoBox->setCurrentIndex(1);
+//}
 
 NetworkSetting::~NetworkSetting()
 {
     delete ui;
-//    clientThread.terminate();
     delete server;
+    delete client;
 }
 
 bool CheckIp(const QString& ipStr)
@@ -238,6 +166,7 @@ void NetworkSetting::on_buildConnBtn_clicked(bool checked)
         logd("remote host ip is invalid: %s", hostIp.toStdString().c_str());
         return;
     }
+    emit sig_buildConn();
     client->SetHostIp(hostIp);
     QThread* clientThread = new QThread();
     clientThread->start();
@@ -247,37 +176,10 @@ void NetworkSetting::on_buildConnBtn_clicked(bool checked)
     emit client->startWork();
 }
 
-//void ServerConnThreadWorker::on_serverConnRecvPacket(TcpConnectionProxy* clientProxy, const Packet& recvPacket)
-//{
-//    logd("server recv packet %d", (int)recvPacket.type);
-//    logd("server send a packet");
-//    Packet sendPacket;
-//    sendPacket.type = PacketType::Empty;
-//    clientProxy->GetSocket()->write((char*)&sendPacket, sizeof(sendPacket));
-//}
-
-//void ClientThreadWorker::on_clientRecvPacket(TcpConnectionProxy* clientProxy, const Packet& packet)
-//{
-//    logd("client recv packet %d", (int)packet.type);
-//}
-
-//struct ServerRequestPacketHandler : public RequestDesktopPacketHandler
-//{
-//public:
-//    ServerRequestPacketHandler(ServerConnThreadWorker* w) : worker(w){}
-//    void operator()(const RequestDesktopPacket& packet)
-//    {
-
-//    }
-//private:
-//    ServerConnThreadWorker* worker;
-//};
-
 void ServerConnThreadWorker::work()
 {
     QTcpSocket* clientConn = new QTcpSocket();
     clientConn->setSocketDescriptor(descriptor);
-//        TcpConnectionProxy* proxy = TcpConnectionProxy::CreateProxy(clientConn);
     clientProxy = new TcpConnectionProxy(clientConn, TcpConnReadState::WaitForRequestPacket);
     clientProxy->RegisterRequestDesktopPacketHandler(this);
     connect(clientProxy->GetSocket(),
@@ -290,30 +192,15 @@ void ClientThreadWorker::operator()(const ResponseDesktopPacket& packet)
 {
     respPacket = packet;
     crntBlkIdx = 0;
-//    logd("client recv response packet");
-//    logd("width: %hu, height: %hu, rows: %hu, cols: %hu, blocks: %u",
-//         packet.width, packet.height, packet.rows, packet.cols, packet.numBlocks);
-//    logd("width: %hu, height: %hu",
-//         packet.width, packet.height);
-//    rddata.resize(packet.GetNumBlocks() * packet.GetNumBytesPerBlock());
     rddata.resize(packet.GetNumBytes());
     compressedRddata.resize(packet.GetNumBlocks() * packet.GetNumBytesPerBlock());
+
+    emit sig_UpdateSize(respPacket.width, respPacket.height);
     epTimer.restart();
 }
 
 void ClientThreadWorker::operator()(const DesktopBlockPacket& packet)
 {
-//    logd("client recv block packet #%d", crntBlkIdx);
-
-//    for(int i = 0; i < 10; ++i)
-//    {
-//        Logger::Inst().Debug("%02x", packet.block[i]);
-//        if(i!=9)Logger::Inst().Debug(" ");
-//    }
-//    Logger::Inst().Debug("\n");
-
-//    memcpy(rddata.data() + crntBlkIdx * respPacket.GetNumBytesPerBlock(),
-//           packet.block, sizeof(packet.block));
     memcpy(compressedRddata.data() + crntBlkIdx * respPacket.GetNumBytesPerBlock(),
            packet.block, sizeof(packet.block));
     crntBlkIdx++;
@@ -330,41 +217,16 @@ void ClientThreadWorker::operator()(const DesktopBlockPacket& packet)
         }
         clientProxy->SwitchState(TcpConnReadState::WaitForResponsePacket);
         this->SendRequestDesktopPacket();
-        // save data
-//        QImage img(respPacket.width, respPacket.height, respPacket.pixelFormt);
-//        quint64 paddingBytes = 0;
-//        for(int i = 0; i < respPacket.height; ++i)
-//        {
-//            for(int j = 0; j < respPacket.width; ++j)
-//            {
-//                switch (respPacket.pixelFormt) {
-//                case QImage::Format_RGB888:
-//                {
-//                    int pidx = (i * respPacket.width + j) * 3 + respPacket.GetNumPaddingBytesPerRow() * i;
-//                    int x = j;
-//                    int y = i;
-//                    y = respPacket.height - y - 1;
-//                    //x = respPacket.width - x - 1;
-//                    //img.setPixelColor(x, y, QColor(rddata[pidx], rddata[pidx+1], rddata[pidx+2]));
-//                    img.setPixelColor(x, y, QColor(rddata[pidx+2], rddata[pidx+1], rddata[pidx]));
-//                    break;
-//                }
-//                default:
-//                    assert(0);
-//                }
-
-//            }
-//        }
-//        img.save("test.png");
     }
-
-
 }
 
 void ClientThreadWorker::SendRequestDesktopPacket()
 {
     RequestDesktopPacket packet;
     packet.type = PacketType::RequestDesktop;
+    packet.scale = reqScale / 100.0;
+//    packet.width = reqWidth;
+//    packet.height = reqHeight;
 //    logd("client send the first request packet");
     clientProxy->GetSocket()->write((char*)&packet, sizeof(packet));
     clientProxy->SwitchState(TcpConnReadState::WaitForResponsePacket);
@@ -384,43 +246,26 @@ void OnSocketError(QAbstractSocket::SocketError err)
     logd("socket error: %d", (int)err);
 }
 
-//struct ClientResponsePacketHandler : public ResponseDesktopPacketHandler
-//{
-//public:
-//    ClientResponsePacketHandler(ClientThreadWorker* w) : worker(w){}
-//    virtual void operator()(const ResponseDesktopPacket& packet) override
-//    {
-
-//    }
-//private:
-//    ClientThreadWorker* worker;
-//};
-
-//struct ClientDesktopBlockPacketHandler : public DesktopBlockPacketHandler
-//{
-//public:
-//    ClientDesktopBlockPacketHandler(ClientThreadWorker* w) : worker(w){}
-//    virtual void operator()(const DesktopBlockPacket& packet) override
-//    {
-
-//    }
-//private:
-//    ClientThreadWorker* worker;
-//};
-
 void ClientThreadWorker::work()
 {
     clientProxy = new TcpConnectionProxy(new QTcpSocket(), TcpConnReadState::WaitForResponsePacket);
-//    connect(clientProxy, &TcpConnectionProxy::FinishPacket,
-//            this, &ClientThreadWorker::on_clientRecvPacket);
     connect(clientProxy->GetSocket(), QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::error),
             this, OnSocketError);
     connect(clientProxy->GetSocket(), &QTcpSocket::stateChanged,
             this, &ClientThreadWorker::on_clientSocketStateChanged);
-//    clientProxy->RegisterResponseDesktopPacketHandler(new ClientResponsePacketHandler(this));
-//    clientProxy->RegisterDesktopBlockPacketHandler(new ClientDesktopBlockPacketHandler(this));
     clientProxy->RegisterResponseDesktopPacketHandler(this);
     clientProxy->RegisterDesktopBlockPacketHandler(this);
     logd("try connect to %s", hostIp.toStdString().c_str());
     clientProxy->GetSocket()->connectToHost(QHostAddress(hostIp), SRV_PORT);
 }
+
+//void NetworkSetting::on_resoBox_currentTextChanged(const QString &resoStr)
+//{
+//    QStringList splits = resoStr.split("x");
+//    if(splits.size() != 2)return;
+//    quint16 w = static_cast<quint16>(splits[0].trimmed().toUInt());
+//    quint16 h = static_cast<quint16>(splits[1].trimmed().toUInt());
+//    client->UpdateRequestResolution(w, h);
+//    emit sig_resoChanged(w, h);
+//}
+

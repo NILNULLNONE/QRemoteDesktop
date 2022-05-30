@@ -11,10 +11,6 @@ CONFIG += c++11
 SOURCES += \
     logdialog.cpp \
     lz4/lz4.c \
-#    lz4/lz4file.c \
-#    lz4/lz4frame.c \
-#    lz4/lz4hc.c \
-#    lz4/xxhash.c \
     lz4helper.cpp \
     main.cpp \
     mainwindow.cpp \
@@ -27,15 +23,9 @@ HEADERS += \
     logdialog.h \
     logger.h \
     lz4/lz4.h \
-#    lz4/lz4file.h \
-#    lz4/lz4frame.h \
-#    lz4/lz4frame_static.h \
-#    lz4/lz4hc.h \
-#    lz4/xxhash.h \
     mainwindow.h \
     networksetting.h \
-    rddatahandler.h \
-    win32helper.h
+    rddatahandler.h
 
 FORMS += \
     logdialog.ui \
