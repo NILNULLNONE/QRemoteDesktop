@@ -4,6 +4,42 @@
 #include <QNetworkInterface>
 #include <cctype>
 #include "logger.h"
+void SocketSendData(QTcpSocket* sck, const char* data, qint64 size)
+{
+    sck->write(data, size);
+}
+
+template<typename MType>
+void SocketSendData(QTcpSocket* sck, MType& msg)
+{
+    SocketSendData(sck, (char*)&msg, sizeof(msg));
+}
+
+template<typename MType>
+void SocketSendBaseData(QTcpSocket* sck, QRDMessageType msgType, MType& msg)
+{
+    QRDMessageBase msgBase;
+    QRDMessageBase::Create(msgType, msg, msgBase);
+    SocketSendData(sck, msgBase);
+}
+
+void SocketRecvData(QTcpSocket* sck, char* buf, qint64 size)
+{
+    while(size > 0)
+    {
+        sck->waitForReadyRead(-1);
+        qint64 cnt = sck->read(buf, size);
+        size -= cnt;
+        buf += cnt;
+    }
+}
+
+template<typename MType>
+void SocketRecvData(QTcpSocket* sck, MType& msg)
+{
+    SocketRecvData(sck, (char*)&msg, sizeof(msg));
+}
+
 quint64 ComputeNumBytes(quint64 numPixelsPerBlock, QImage::Format fmt)
 {
 
@@ -16,89 +52,6 @@ quint64 ComputeNumBytes(quint64 numPixelsPerBlock, QImage::Format fmt)
         assert(0);
     }
     return 0;
-}
-
-TcpConnectionProxy::TcpConnectionProxy(QTcpSocket* client, TcpConnReadState state)
-    : clientConn(client),
-      readState(state)
-{
-    SwitchState(readState);
-    if(!clientConn)return;
-    connect(clientConn, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::error), this, &TcpConnectionProxy::sig_SocketError);
-    connect(clientConn, &QTcpSocket::stateChanged, this, &TcpConnectionProxy::sig_SocketStateChanged);
-    connect(clientConn, &QAbstractSocket::disconnected,this, &TcpConnectionProxy::on_clientDisconnected);
-    connect(clientConn, &QAbstractSocket::readyRead, this, &TcpConnectionProxy::on_clientDataReady);
-}
-
-void TcpConnectionProxy::on_clientDisconnected()
-{
-    clientConn->deleteLater();
-    delete this;
-}
-
-void TcpConnectionProxy::on_clientDataReady()
-{
-    this->ReadData();
-}
-
-char dataBuf[BUF_SIZE];
-void TcpConnectionProxy::ReadData()
-{
-    qint64 bytesRead = clientConn->read(dataBuf, sizeof(dataBuf));
-    switch (readState)
-    {
-    case TcpConnReadState::WaitForRequestPacket:
-        ReadPacket<RequestDesktopPacket>(dataBuf, bytesRead);
-        break;
-    case TcpConnReadState::WaitForResponsePacket:
-        ReadPacket<ResponseDesktopPacket>(dataBuf,bytesRead);
-        break;
-    case TcpConnReadState::WaitForBlockPacket:
-        ReadPacket<DesktopBlockPacket>(dataBuf, bytesRead);
-        break;
-    case TcpConnReadState::None:
-        assert(0);
-        break;
-    default:
-        break;
-    }
-}
-
-template<typename PType>
-void TcpConnectionProxy::ReadPacket(char* dataBuf, qint64 dataSize)
-{
-    if(dataSize < remainBytesToRead)
-    {
-        remainBytesToRead -= dataSize;
-        memcpy(dataPtr, dataBuf, dataSize);
-        dataPtr += dataSize;
-    }
-    else
-    {
-        memcpy(dataPtr, dataBuf, remainBytesToRead);
-        dataBuf += remainBytesToRead;
-        dataSize -= remainBytesToRead;
-
-        PType packet;
-        memcpy(&packet, dataCache, sizeof(PType));
-        this->HandlePacket(packet);
-        if(dataSize > 0)
-        {
-            switch (packet.type) {
-            case PacketType::Empty:
-                break;
-            case PacketType::RequestDesktop:
-                assert(0);
-                break;
-            case PacketType::ResponseDesktop:
-                ReadPacket<DesktopBlockPacket>(dataBuf, dataSize);
-                break;
-            case PacketType::DesktopBlock:
-                ReadPacket<DesktopBlockPacket>(dataBuf, dataSize);
-                break;
-            }
-        }
-    }
 }
 
 NetworkSetting::NetworkSetting(QWidget *parent) :
@@ -119,10 +72,6 @@ NetworkSetting::NetworkSetting(QWidget *parent) :
             this, &NetworkSetting::sig_UpdateSize);
 }
 
-//void NetworkSetting::Init()
-//{
-//    ui->resoBox->setCurrentIndex(1);
-//}
 
 NetworkSetting::~NetworkSetting()
 {
@@ -183,107 +132,154 @@ void NetworkSetting::on_buildConnBtn_clicked(bool checked)
 
 void ServerConnThreadWorker::work()
 {
-    QTcpSocket* clientConn = new QTcpSocket();
+    logd("server start work");
+    clientConn = new QTcpSocket();
     clientConn->setSocketDescriptor(descriptor);
-    clientProxy = new TcpConnectionProxy(clientConn, TcpConnReadState::WaitForRequestPacket);
-    clientProxy->RegisterRequestDesktopPacketHandler(this);
-    connect(clientConn, &QTcpSocket::disconnected,
-            this, &ServerConnThreadWorker::on_ClientDisconnect);
-//    connect(clientProxy->GetSocket(),
-//            QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::error),
-//            this, &ServerConnThreadWorker::on_SocketError);
-}
 
-
-void ClientThreadWorker::operator()(const ResponseDesktopPacket& packet)
-{
-    respPacket = packet;
-    crntBlkIdx = 0;
-    rddata.resize(packet.GetNumBytes());
-    compressedRddata.resize(packet.GetNumBlocks() * packet.GetNumBytesPerBlock());
-
-    emit sig_UpdateSize(respPacket.width, respPacket.height);
-//    epTimer.restart();
-}
-
-void ClientThreadWorker::operator()(const DesktopBlockPacket& packet)
-{
-    memcpy(compressedRddata.data() + crntBlkIdx * respPacket.GetNumBytesPerBlock(),
-           packet.block, sizeof(packet.block));
-    crntBlkIdx++;
-    if(crntBlkIdx == respPacket.GetNumBlocks())
+    QRDMessageBase baseMsg;
+    QRDMsgRequestDesktopCapture req;
+    while(true)
     {
-        extern qint32 lz4Decompress(const void* src, void* dst, qint32 srcSize, qint32 maxOutputSize);
-        lz4Decompress(compressedRddata.data(), rddata.data(),
-                      respPacket.size, rddata.size());
-//        qDebug()<< "recv total data use"  << epTimer.elapsed() << " ms";
-        crntBlkIdx = 0;
-        for(auto handler : rddataHandleres)
+        logd("server try recv data");
+        SocketRecvData(clientConn, baseMsg);
+
+        if(baseMsg.type == QRDMessageType::RequestDekstop)
         {
-            (*handler)(rddata, respPacket.width, respPacket.height, respPacket.alignRow);
+            baseMsg.ParseData(req);
+            SendDesktopCapture(req);
         }
-        clientProxy->SwitchState(TcpConnReadState::WaitForResponsePacket);
-        this->SendRequestDesktopPacket();
     }
 }
 
-void ClientThreadWorker::SendRequestDesktopPacket()
+void ServerConnThreadWorker::SendDesktopCapture(QRDMsgRequestDesktopCapture& req)
 {
-    RequestDesktopPacket packet;
-    packet.type = PacketType::RequestDesktop;
-    packet.scale = reqScale / 100.0;
-//    packet.width = reqWidth;
-//    packet.height = reqHeight;
-//    logd("client send the first request packet");
-    clientProxy->GetSocket()->write((char*)&packet, sizeof(packet));
-    clientProxy->SwitchState(TcpConnReadState::WaitForResponsePacket);
+    logd("server send deskotp capture");
+    QRDMsgDesktopDescription desc;
+    desc.alignRow = true;
+    desc.pixelFormt = QImage::Format_RGB888;
+    GetDesktopCaptureInfo(&desc.width, &desc.height,
+                          &desc.pixelFormt, &desc.alignRow);
+
+    {
+        desc.width *= req.scale;
+        desc.height *= req.scale;
+    }
+    quint64 numBytes = desc.GetNumBytes();
+    if(numBytes != captureData.size())
+        captureData.resize(numBytes);
+//        CaptureDesktop(captureData.data());
+    StretchCaptureDesktop(captureData.data(), captureData.size(), desc.width, desc.height);
+
+    // compress
+    {
+        extern qint32 lz4CalculateCompressedSize(qint32 uncompressedSize);
+        extern qint32 lz4Compress(const void* src, void* dst, qint32 srcSize, qint32 maxOutputSize);
+        qint32 compressedSize = lz4CalculateCompressedSize(static_cast<qint32>(captureData.size()));
+        compressedData.resize(compressedSize);
+        desc.compressedSize = lz4Compress(captureData.data(), compressedData.data(), captureData.size(), compressedSize);
+    }
+
+
+//        clientProxy->GetSocket()->write(reinterpret_cast<char*>(&respPacket), sizeof(respPacket));
+    SocketSendBaseData(clientConn, QRDMessageType::DesktopDescription, desc);
+    desc.DebugLog();
+
+    quint64 bytesPerBlock = desc.GetNumBytesPerBlock();
+    quint64 numBlocks = desc.GetNumBlocks();
+//    DesktopBlockPacket blkPacket;
+    QRDMsgDesktopDataBlock blkPacket;
+    quint8* dataPtr = compressedData.data();
+
+    for(int i = 0; i < numBlocks; ++i)
+    {
+        quint64 bytesToCopy = bytesPerBlock;
+        if(numBytes < bytesToCopy)
+            bytesToCopy = numBytes;
+        memcpy(blkPacket.block, dataPtr, bytesToCopy);
+        dataPtr += bytesToCopy;
+        numBytes -= bytesToCopy;
+        SocketSendData(clientConn, blkPacket);
+    }
 }
 
-void ClientThreadWorker::on_clientSocketStateChanged(QAbstractSocket::SocketState newState)
+bool ClientThreadWorker::SendRequestDesktopPacket()
 {
-    logd("client socket state changed to: %d", (int)newState);
-    if(newState == QAbstractSocket::SocketState::ConnectedState)
-    {
-        this->SendRequestDesktopPacket();
-    }
-    else if(newState == QAbstractSocket::SocketState::UnconnectedState)
-    {
-//        this->CleanUp();
-        emit this->sig_CleanUp();
-    }
+    logd("client send request desktop");
+    QRDMsgRequestDesktopCapture msg;
+    msg.scale = reqScale / 100.0;
+    SocketSendBaseData(clientSocket, QRDMessageType::RequestDekstop, msg);
+    return true;
 }
 
-//void OnSocketError(QAbstractSocket::SocketError err)
-//{
-//    logd("socket error: %d", (int)err);
-//}
+bool ClientThreadWorker::RecvDesktopCapture(QRDMessageBase& baseMsg)
+{
+    logd("client recv desktop capture");
+    QRDMsgDesktopDescription desc;
+    baseMsg.ParseData(desc);
+    desc.DebugLog();
+    rddata.resize(desc.GetNumBytes());
+    compressedRddata.resize(desc.GetNumBlocks() * desc.GetNumBytesPerBlock());
+    emit sig_UpdateSize(desc.width, desc.height);
+
+    int numBlocks = desc.GetNumBlocks();
+    logd("total blocks: %d", numBlocks);
+
+    QRDMsgDesktopDataBlock block;
+    for(int i = 0; i < numBlocks; ++i)
+    {
+        logd("client try recv block data");
+        SocketRecvData(clientSocket, block);
+        memcpy(compressedRddata.data() + i * desc.GetNumBytesPerBlock(),
+               block.block, sizeof(block.block));
+
+        if(i == numBlocks - 1)
+        {
+            extern qint32 lz4Decompress(const void* src, void* dst, qint32 srcSize, qint32 maxOutputSize);
+            lz4Decompress(compressedRddata.data(), rddata.data(),
+                          desc.compressedSize, rddata.size());
+            qDebug()<<"recv total desktop"<<rddata.size();
+            for(auto handler : rddataHandleres)
+            {
+                (*handler)(rddata, desc.width, desc.height, desc.alignRow);
+            }
+        }
+    }
+    return true;
+}
 
 void ClientThreadWorker::work()
 {
-    clientProxy = new TcpConnectionProxy(new QTcpSocket(), TcpConnReadState::WaitForResponsePacket);
-    connect(clientProxy, &TcpConnectionProxy::sig_SocketError,
-            this, &ClientThreadWorker::on_clientSocketError);
-    connect(clientProxy, &TcpConnectionProxy::sig_SocketStateChanged,
-            this, &ClientThreadWorker::on_clientSocketStateChanged);
-    clientProxy->RegisterResponseDesktopPacketHandler(this);
-    clientProxy->RegisterDesktopBlockPacketHandler(this);
-    logd("try connect to %s", hostIp.toStdString().c_str());
-    clientProxy->GetSocket()->connectToHost(QHostAddress(hostIp), SRV_PORT);
-}
+    clientSocket = new QTcpSocket();//clientProxy->GetSocket();
+    clientSocket->connectToHost(QHostAddress(hostIp), SRV_PORT);
+    if(clientSocket->waitForConnected(3000))
+    {
+        if(!SendRequestDesktopPacket())
+        {
+            logd("fail to send request packet");
+            return;
+        }
 
-void ClientThreadWorker::on_clientSocketError(QAbstractSocket::SocketError err)
-{
-//    this->CleanUp();
-    emit this->sig_CleanUp();
+        QRDMessageBase baseMsg;
+        while(true)
+        {
+            logd("client try recv data");
+            SocketRecvData(clientSocket, baseMsg);
+
+            if(baseMsg.type == QRDMessageType::DesktopDescription)
+            {
+                RecvDesktopCapture(baseMsg);
+                SendRequestDesktopPacket();
+            }
+        }
+    }
+    else
+    {
+        logd("connect to host fail!");
+    }
 }
 
 void ClientThreadWorker::CleanUp()
 {
-    if(clientProxy)
-    {
-        delete clientProxy;
-        clientProxy = nullptr;
-    }
 
 }
 

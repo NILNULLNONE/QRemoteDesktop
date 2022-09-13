@@ -1,4 +1,4 @@
-#ifndef NETWORKSETTING_H
+﻿#ifndef NETWORKSETTING_H
 #define NETWORKSETTING_H
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -17,35 +17,57 @@ extern quint64 ComputeNumBytes(quint64 numPixelsPerBlock, QImage::Format fmt);
 extern void GetDesktopCaptureInfo(quint16* width, quint16* height, QImage::Format* format, bool* rowAlign);
 extern void CaptureDesktop(quint8* bytes);
 extern void StretchCaptureDesktop(quint8* dst, quint64 dstSize, quint16 width, quint16 height);
-enum class PacketType
+
+enum class QRDMessageType
 {
-    Empty,
-    RequestDesktop,
-    ResponseDesktop,
-    DesktopBlock
+    None,
+    InvalidMsg,
+    RequestDekstop,
+    DesktopDescription,
+    DesktopDataBlock
 };
 
-struct Packet
+struct QRDMessageBase
 {
-    PacketType type;
+    QRDMessageType type;
+    char buf[4096];
+    template<typename DType>
+    static void Create(QRDMessageType t, const DType& dat, QRDMessageBase& outMsg)
+    {
+        auto s = sizeof(dat);
+        if(s > sizeof(buf))
+        {
+            outMsg.type = QRDMessageType::InvalidMsg;
+            return;
+        }
+        outMsg.type = t;
+        memcpy(outMsg.buf, &dat, sizeof(dat));
+    }
+
+    template<typename Type>
+    void ParseData(Type& outData)
+    {
+        if(sizeof(outData) > sizeof(buf))
+        {
+            logd("fail to parse data");
+            return;
+        }
+        memcpy(&outData, buf, sizeof(outData));
+    }
 };
 
-struct RequestDesktopPacket
+struct QRDMsgRequestDesktopCapture
 {
-    PacketType type = PacketType::RequestDesktop;
     double scale;
-//    quint16 width;
-//    quint16 height;
 };
 
-struct ResponseDesktopPacket
+struct QRDMsgDesktopDescription
 {
-    PacketType type = PacketType::ResponseDesktop;
     quint16 width;
     quint16 height;
     QImage::Format pixelFormt = QImage::Format_RGB888;
     bool alignRow;// 4 byte alignment
-    qint32 size;
+    qint32 compressedSize;
     quint64 GetNumPixels()const{return width * height;}
     quint64 GetNumPaddingBytesPerRow()const
     {
@@ -65,150 +87,31 @@ struct ResponseDesktopPacket
         return bytes;
     }
     quint64 GetNumBytesPerBlock()const{return PACKET_BLOCK_BYTES;}
-    quint64 GetNumBlocks()const{return (size + GetNumBytesPerBlock() - 1) / GetNumBytesPerBlock();}
+    quint64 GetNumBlocks()const{return (compressedSize + GetNumBytesPerBlock() - 1) / GetNumBytesPerBlock();}
+    void DebugLog()
+    {
+        logd("width: %d, height: %d, compressedSize: %d",
+             (int)width, (int)height, (int)compressedSize);
+    }
 };
 
-struct DesktopBlockPacket
+struct QRDMsgDesktopDataBlock
 {
-    PacketType type = PacketType::DesktopBlock;
     quint8 block[PACKET_BLOCK_BYTES];
 };
 
-struct RequestDesktopPacketHandler
-{
-    virtual void operator()(const RequestDesktopPacket& packet){}
-};
-
-struct ResponseDesktopPacketHandler
-{
-    virtual void operator()(const ResponseDesktopPacket& packet){}
-};
-
-struct DesktopBlockPacketHandler
-{
-    virtual void operator()(const DesktopBlockPacket& packet){}
-};
-
-enum class TcpConnReadState
-{
-    None,
-    WaitForRequestPacket,
-    WaitForResponsePacket,
-    WaitForBlockPacket
-};
-
-class TcpConnectionProxy;
-class TcpConnectionProxy : public QObject
-{
-    Q_OBJECT
-public:
-    TcpConnectionProxy(QTcpSocket* client, TcpConnReadState state);
-    ~TcpConnectionProxy()
-    {
-        if(clientConn)
-        {
-            clientConn->disconnect();
-            if(clientConn->isOpen())
-            {
-                clientConn->close();
-                if(clientConn->state() != QAbstractSocket::SocketState::UnconnectedState)
-                    clientConn->waitForDisconnected();
-            }
-
-            delete clientConn;
-            clientConn = nullptr;
-        }
-    }
-    QTcpSocket* GetSocket()const{return clientConn;}
-    void SwitchState(TcpConnReadState state)
-    {
-        readState = state;
-        switch (readState) {
-        case TcpConnReadState::WaitForRequestPacket:
-            remainBytesToRead = sizeof(RequestDesktopPacket);
-            break;
-        case TcpConnReadState::WaitForResponsePacket:
-            remainBytesToRead = sizeof(ResponseDesktopPacket);
-            break;
-        case TcpConnReadState::WaitForBlockPacket:
-            remainBytesToRead = sizeof(DesktopBlockPacket);
-            break;
-        case TcpConnReadState::None:
-            assert(0);
-            break;
-        }
-        dataPtr = dataCache;
-    }
-    void RegisterRequestDesktopPacketHandler(RequestDesktopPacketHandler* handler)
-    {
-        requestDesktopPacketHandleres.push_back(handler);
-    }
-    void RegisterResponseDesktopPacketHandler(ResponseDesktopPacketHandler* handler)
-    {
-        responseDesktopPacketHandleres.push_back(handler);
-    }
-    void RegisterDesktopBlockPacketHandler(DesktopBlockPacketHandler* handler)
-    {
-        desktopBlockPacketHandleres.push_back(handler);
-    }
-    void HandlePacket(const RequestDesktopPacket& packet)
-    {
-        this->SwitchState(TcpConnReadState::WaitForRequestPacket);
-        for(auto& handler : requestDesktopPacketHandleres)
-            (*handler)(packet);
-    }
-    void HandlePacket(const ResponseDesktopPacket& packet)
-    {
-        this->SwitchState(TcpConnReadState::WaitForBlockPacket);
-        for(auto& handler : responseDesktopPacketHandleres)
-            (*handler)(packet);
-    }
-    void HandlePacket(const DesktopBlockPacket& packet)
-    {
-        this->SwitchState(TcpConnReadState::WaitForBlockPacket);
-        for(auto& handler : desktopBlockPacketHandleres)
-            (*handler)(packet);
-    }
-signals:
-    void sig_SocketError(QAbstractSocket::SocketError err);
-    void sig_SocketStateChanged(QAbstractSocket::SocketState state);
-private:
-    void ReadData();
-    template<typename PType>
-    void ReadPacket(char* dataBuf, qint64 dataSize);
-private slots:
-    void on_clientDisconnected();
-    void on_clientDataReady();
-private:
-    QTcpSocket* clientConn;
-    char dataCache[BUF_SIZE];
-    char* dataPtr;
-    TcpConnReadState readState;
-    qint64 remainBytesToRead;
-    QVector<RequestDesktopPacketHandler*> requestDesktopPacketHandleres;
-    QVector<ResponseDesktopPacketHandler*> responseDesktopPacketHandleres;
-    QVector<DesktopBlockPacketHandler*> desktopBlockPacketHandleres;
-};
-
-//extern void OnSocketError(QAbstractSocket::SocketError err);
-
 class ServerConnThreadWorker :
-        public QObject,
-        public RequestDesktopPacketHandler
+        public QObject
 {
     Q_OBJECT
 public:
     ServerConnThreadWorker(qintptr d)
-        : descriptor(d),
-         clientProxy(nullptr)
+        : descriptor(d)
     {
-        connect(this, &ServerConnThreadWorker::sig_recvRequest,
-                this, &ServerConnThreadWorker::on_recvRequest);
     }
 
     ~ServerConnThreadWorker()
     {
-        this->CleanUp();
     }
     void work();
 
@@ -220,98 +123,21 @@ signals:
     void sig_recvRequest();
 
 public:
-    void operator()(const RequestDesktopPacket& packet) override
-    {
-//        logd("server recv request packet");
-        reqPacket = packet;
-        emit sig_recvRequest();
-    }
-
-    void on_recvRequest()
-    {
-        ResponseDesktopPacket respPacket;
-        respPacket.type = PacketType::ResponseDesktop;
-//        respPacket.width = reqPacket.width;
-//        respPacket.height = reqPacket.height;
-        respPacket.alignRow = true;
-        respPacket.pixelFormt = QImage::Format_RGB888;
-        GetDesktopCaptureInfo(&respPacket.width, &respPacket.height,
-                              &respPacket.pixelFormt, &respPacket.alignRow);
-
-        {
-            respPacket.width *= reqPacket.scale;
-            respPacket.height *= reqPacket.scale;
-        }
-        quint64 numBytes = respPacket.GetNumBytes();
-        if(numBytes != captureData.size())
-            captureData.resize(numBytes);
-//        CaptureDesktop(captureData.data());
-        StretchCaptureDesktop(captureData.data(), captureData.size(), respPacket.width, respPacket.height);
-
-        // compress
-        {
-            extern qint32 lz4CalculateCompressedSize(qint32 uncompressedSize);
-            extern qint32 lz4Compress(const void* src, void* dst, qint32 srcSize, qint32 maxOutputSize);
-            qint32 compressedSize = lz4CalculateCompressedSize(static_cast<qint32>(captureData.size()));
-            compressedData.resize(compressedSize);
-            respPacket.size = lz4Compress(captureData.data(), compressedData.data(), captureData.size(), compressedSize);
-        }
-
-
-        clientProxy->GetSocket()->write(reinterpret_cast<char*>(&respPacket), sizeof(respPacket));
-
-        quint64 bytesPerBlock = respPacket.GetNumBytesPerBlock();
-        quint64 numBlocks = respPacket.GetNumBlocks();
-        DesktopBlockPacket blkPacket;
-        quint8* dataPtr = compressedData.data();
-
-        for(int i = 0; i < numBlocks; ++i)
-        {
-            quint64 bytesToCopy = bytesPerBlock;
-            if(numBytes < bytesToCopy)
-                bytesToCopy = numBytes;
-            memcpy(blkPacket.block, dataPtr, bytesToCopy);
-            dataPtr += bytesToCopy;
-            numBytes -= bytesToCopy;
-            clientProxy->GetSocket()->write(reinterpret_cast<char*>(&blkPacket), sizeof(blkPacket));
-        }
-    }
-
-    void on_SocketError(QAbstractSocket::SocketError err)
-    {
-//        this->CleanUp();
-        qDebug()<<"socet err "<<err;
-    }
-
-    void CleanUp()
-    {
-//        if(clientProxy)
-//        {
-//            clientProxy->disconnect();
-//            delete clientProxy;
-//            clientProxy = nullptr;
-//        }
-    }
+    void SendDesktopCapture(QRDMsgRequestDesktopCapture& req);
 private:
     qintptr descriptor;
-    RequestDesktopPacket reqPacket;
-    TcpConnectionProxy* clientProxy;
     QVector<quint8> captureData;
     QVector<quint8> compressedData;
+    QTcpSocket* clientConn;
 };
 
-class ClientThreadWorker :
-        public QObject
-        , public ResponseDesktopPacketHandler
-        , public DesktopBlockPacketHandler
+class ClientThreadWorker : public QObject
 {
     Q_OBJECT
 public:
     ClientThreadWorker()
-        : clientProxy(nullptr),
-          reqScale(50)
-//        : reqWidth(1024),
-//          reqHeight(768)
+        : reqScale(50),
+          clientSocket(nullptr)
     {
         clientThread = new QThread();
         clientThread->start();
@@ -332,14 +158,6 @@ public:
 
     void SetHostIp(const QString& hip){hostIp = hip;}
 
-    void on_clientSocketStateChanged(QAbstractSocket::SocketState);
-
-    void on_clientSocketError(QAbstractSocket::SocketError err);
-
-    virtual void operator()(const ResponseDesktopPacket& packet) override;
-
-    virtual void operator()(const DesktopBlockPacket& packet) override;
-
     void RegisterRDDataHandler(RDDataHandler* handler)
     {
         rddataHandleres.push_back(handler);
@@ -347,7 +165,9 @@ public:
 
     void work();
 
-    void SendRequestDesktopPacket();
+    bool SendRequestDesktopPacket();
+
+    bool RecvDesktopCapture(QRDMessageBase& baseMsg);
 
     void UpdateRequestScale(double s) {reqScale = s;}
 
@@ -355,30 +175,22 @@ public:
 
     bool IsConnected()const
     {
-        return clientProxy && clientProxy->GetSocket()->state() == QAbstractSocket::SocketState::ConnectedState;
+        return clientSocket && clientSocket->state() == QAbstractSocket::SocketState::ConnectedState;
     }
-//    void UpdateRequestResolution(quint16 w, quint16 h)
-//    {
-//        reqWidth = w;
-//        reqHeight = h;
-//    }
+
 signals:
     void startWork();
     void sig_UpdateSize(quint16 w, quint16 h);
     void sig_CleanUp();
 private:
-    TcpConnectionProxy* clientProxy;
     QString hostIp;
-    ResponseDesktopPacket respPacket;
-    int crntBlkIdx;
     QVector<quint8> rddata;
     QVector<quint8> compressedRddata;
-    int numBlks;
     QVector<RDDataHandler*> rddataHandleres;
     QElapsedTimer epTimer;
-//    quint16 reqWidth, reqHeight;
     double reqScale;
     QThread* clientThread;
+    QTcpSocket* clientSocket;
 };
 
 namespace Ui {
@@ -404,28 +216,14 @@ public:
 
     void CleanUp()
     {
-        if(serverThread)
-        {
-            if(serverThread->isRunning())
-            {
-                 serverThread->quit();
-                 serverThread->wait();
-            }
-            delete serverThread;
-            serverThread = nullptr;
-        }
 
-        if(newConnThreadWorker)
-        {
-            delete newConnThreadWorker;
-            newConnThreadWorker = nullptr;
-        }
     }
 signals:
     void startWork();
 protected:
     void incomingConnection(qintptr socketDescriptor)override
     {
+        logd("server recv incoming connection");
         serverThread = new QThread();
         serverThread->start();
         newConnThreadWorker = new ServerConnThreadWorker(socketDescriptor);
@@ -472,7 +270,6 @@ private slots:
     void on_waitConnBtn_clicked(bool checked);
 
     void on_buildConnBtn_clicked(bool checked);
-
 
 //    void on_resoBox_currentTextChanged(const QString &arg1);
 
